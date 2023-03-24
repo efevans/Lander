@@ -43,7 +43,6 @@ public partial class Ship : RigidBody2D
 
         if (Input.IsActionPressed("thrust_left"))
         {
-            //ApplyForce(Vector2.Right * SideThrust, _leftThruster.Position);
             var translatedPosition = Transform.BasisXform(_leftThruster.Position);
             var translatedForce = Transform.BasisXform(Vector2.Right * SideThrust);
             ApplyForce(translatedForce, translatedPosition);
