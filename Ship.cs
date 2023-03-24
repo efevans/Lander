@@ -15,8 +15,40 @@ public partial class Ship : RigidBody2D
     private Dictionary<int, CollisionPolygon2D> CollisionObjectsById { get; set; } = new Dictionary<int, CollisionPolygon2D>();
 	private int _numberOfTouchingLegs = 0;
 
-	// Called when the node enters the scene tree for the first time.
-	public override void _Ready()
+    private bool _resetNextTick = false;
+    private ResetOption _resetOption;
+    private struct ResetOption
+    {
+        public Vector2 Position;
+        public Vector2 Velocity;
+        public float Rotation;
+        public float AngularVelocity;
+    }
+
+    public void Reset(Vector2 position, Vector2 velocity, float rotation, float angularVelocity)
+    {
+        _resetOption = new ResetOption { Position = position, Velocity = velocity, Rotation = rotation, AngularVelocity = angularVelocity };
+        _resetNextTick = true;
+    }
+
+    public override void _IntegrateForces(PhysicsDirectBodyState2D state)
+    {
+        if (_resetNextTick)
+        {
+            //GD.Print($"Changing angle by {_resetOption.Rotation}");
+            _resetNextTick = false;
+            var transform = state.Transform;
+            transform.Origin.X = _resetOption.Position.X;
+            transform.Origin.Y = _resetOption.Position.Y;
+            transform = transform.RotatedLocal(_resetOption.Rotation);
+            state.Transform = transform;
+            LinearVelocity = _resetOption.Velocity;
+            AngularVelocity = _resetOption.AngularVelocity;
+        }
+    }
+
+    // Called when the node enters the scene tree for the first time.
+    public override void _Ready()
 	{
         _leftThruster = GetNode<Sprite2D>("ThrusterLeftSprite");
         _rightThruster = GetNode<Sprite2D>("ThrusterRightSprite");
@@ -26,6 +58,7 @@ public partial class Ship : RigidBody2D
 	public override void _Process(double delta)
 	{
         var angle = Rotation;
+        //GD.Print($"Velocity: {LinearVelocity}, Angular Velocity: {AngularVelocity}, Angle: {Rotation}");
 
         if (Input.IsActionPressed("thrust_down"))
         {
