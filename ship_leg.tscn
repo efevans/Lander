@@ -1,0 +1,23 @@
+[gd_scene load_steps=3 format=3 uid="uid://dnni2a2wsc7k2"]
+
+[ext_resource type="Texture2D" uid="uid://cihupxporrnp5" path="res://ShipLeg.png" id="1_bdriw"]
+
+[sub_resource type="PhysicsMaterial" id="PhysicsMaterial_8u3je"]
+friction = 0.83
+bounce = 0.09
+
+[node name="ShipLeg" type="RigidBody2D"]
+collision_mask = 2
+physics_material_override = SubResource("PhysicsMaterial_8u3je")
+gravity_scale = 0.47
+max_contacts_reported = 1
+contact_monitor = true
+metadata/_edit_group_ = true
+
+[node name="Sprite2D" type="Sprite2D" parent="."]
+scale = Vector2(0.105, 0.105)
+texture = ExtResource("1_bdriw")
+
+[node name="CollisionPolygon2D" type="CollisionPolygon2D" parent="."]
+scale = Vector2(0.105, 0.105)
+polygon = PackedVector2Array(0.5, -101.3, 4.5, -100.3, 4.5, -98.9, 7.5, -95.9, 7.5, 93.5, 6.1, 93.5, 4.1, 97.5, 1.9, 97.5, -0.1, 99.5, -6.5, 99.5, -6.5, 98.3, -10.5, 97.3, -10.5, 95.9, -13.5, 92.9, -13.5, -95.8, -10, -100.5, -7.7, -100.5, -6.5, -101.1, -6.5, -102.5, 0.5, -102.5)

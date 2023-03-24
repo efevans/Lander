@@ -1,0 +1,13 @@
+[gd_scene load_steps=3 format=3 uid="uid://df40xtdsjydqf"]
+
+[ext_resource type="PackedScene" uid="uid://fjh4c17l6bdm" path="res://ground.tscn" id="2_07j1p"]
+[ext_resource type="PackedScene" uid="uid://baaeay4k62i5w" path="res://ship_body.tscn" id="2_ndvfw"]
+
+[node name="World" type="Node"]
+
+[node name="Ground" parent="." instance=ExtResource("2_07j1p")]
+
+[node name="ShipBody" parent="." instance=ExtResource("2_ndvfw")]
+position = Vector2(587, 68)
+rotation = 6.28318
+gravity_scale = 1.0
