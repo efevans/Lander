@@ -2,6 +2,9 @@ using Godot;
 using Godot.Collections;
 using System;
 using System.Collections.Generic;
+using Tensorflow;
+using Tensorflow.Keras.Engine;
+using Tensorflow.NumPy;
 
 public partial class Ship : RigidBody2D
 {
@@ -27,11 +30,13 @@ public partial class Ship : RigidBody2D
     [Export]
     public float ExceededMaxMissionLengthReward;
 
+    public IActionSelector ActionSelector = new PlayerActionSelector();
+
     private Sprite2D _leftThruster;
     private Sprite2D _rightThruster;
     private Timer _maxMissionLengthTimer;
 
-    private List<StateActionPair> _stateActions = new List<StateActionPair>();
+    private readonly List<StateActionPair> _stateActions = new();
 
     private bool _resetNextTick = false;
     private ResetOption _resetOption;
@@ -52,7 +57,7 @@ public partial class Ship : RigidBody2D
 
         // Setting immediately can cause the current simulation to set "In progress" to false again, so 
         // defer it to ensure we the current physics steps moves up back to reset position first
-        SetDeferred("_simulationInProgress", true); 
+        SetDeferred("_simulationInProgress", true);
     }
 
     public override void _IntegrateForces(PhysicsDirectBodyState2D state)
@@ -72,41 +77,36 @@ public partial class Ship : RigidBody2D
 
     // Called when the node enters the scene tree for the first time.
     public override void _Ready()
-	{
+    {
         _leftThruster = GetNode<Sprite2D>("ThrusterLeftSprite");
         _rightThruster = GetNode<Sprite2D>("ThrusterRightSprite");
         _maxMissionLengthTimer = GetNode<Timer>("MaxMissionLengthTimer");
     }
 
-	public override void _PhysicsProcess(double delta)
-	{
-        Action action = new Action();
+    public override void _PhysicsProcess(double delta)
+    {
+        Action action = ActionSelector.GetNextAction(this);
 
         // Use else-if here to restrict our action space to a size of 4
-        if (Input.IsActionPressed("thrust_down"))
+        if (action == Action.ThrustDown)
         {
-            action.ThrustDown = true;
             var translatedForce = Transform.BasisXform(Vector2.Up * DownwardThrust);
             ApplyForce(translatedForce);
             ApplyReward(DownwardThrustReward);
-        } 
-        else if (Input.IsActionPressed("thrust_right"))
+        }
+        else if (action == Action.ThrustRight)
         {
             var translatedPosition = Transform.BasisXform(_rightThruster.Position);
             var translatedForce = Transform.BasisXform(Vector2.Left * SideThrust);
             ApplyForce(translatedForce, translatedPosition);
             ApplyReward(SideThrustReward);
-        } 
-        else if (Input.IsActionPressed("thrust_left"))
+        }
+        else if (action == Action.ThrustLeft)
         {
             var translatedPosition = Transform.BasisXform(_leftThruster.Position);
             var translatedForce = Transform.BasisXform(Vector2.Right * SideThrust);
             ApplyForce(translatedForce, translatedPosition);
             ApplyReward(SideThrustReward);
-        }
-        else
-        {
-            action.Nothing = true;
         }
 
         if (LeftLegTouching && RightLegTouching)
@@ -132,8 +132,8 @@ public partial class Ship : RigidBody2D
             _wasTouchingDownLastFrame = false;
         }
 
-        State state = new State(this);
-        StateActionPair pair = new StateActionPair()
+        State state = new(this);
+        StateActionPair pair = new()
         {
             State = state,
             Action = action
@@ -152,13 +152,13 @@ public partial class Ship : RigidBody2D
     private bool _simulationInProgress = false;
 
     private void OnBodyShapeEntered(Rid _, Node _2, long _3, long local_shape_index)
-	{
+    {
         CollisionPolygon2D localCollisionObject = GetLocalCollisionObject(local_shape_index);
-		GD.Print($"Found leg {localCollisionObject.Name} Landing");
+        GD.Print($"Found leg {localCollisionObject.Name} Landing");
 
-		if (localCollisionObject.Name.ToString().Contains("Leg"))
-		{
-			if (false == _anyLegHasTouched)
+        if (localCollisionObject.Name.ToString().Contains("Leg"))
+        {
+            if (false == _anyLegHasTouched)
             {
                 _anyLegHasTouched = true;
                 ApplyReward(FirstLegTouchReward);
@@ -200,21 +200,21 @@ public partial class Ship : RigidBody2D
         }
     }
 
-	private CollisionPolygon2D GetLocalCollisionObject(long shape_index)
-	{
-		int shapeIndexInt = (int)shape_index;
+    private CollisionPolygon2D GetLocalCollisionObject(long shape_index)
+    {
+        int shapeIndexInt = (int)shape_index;
 
-		if (CollisionObjectsById.TryGetValue(shapeIndexInt, out CollisionPolygon2D collisionObject))
-		{
-			return collisionObject;
-		}
+        if (CollisionObjectsById.TryGetValue(shapeIndexInt, out CollisionPolygon2D collisionObject))
+        {
+            return collisionObject;
+        }
 
         var local_shape_owner = ShapeFindOwner(shapeIndexInt);
         collisionObject = (CollisionPolygon2D)ShapeOwnerGetOwner(local_shape_owner);
 
-		CollisionObjectsById[shapeIndexInt] = collisionObject;
+        CollisionObjectsById[shapeIndexInt] = collisionObject;
 
-		return collisionObject;
+        return collisionObject;
     }
 
     private void OnMaxMissionLengthTimer()
@@ -241,6 +241,11 @@ public partial class Ship : RigidBody2D
         }
     }
 
+    public State ToState()
+    {
+        return new State(this);
+    }
+
     public class StateActionPair
     {
         public State State;
@@ -261,6 +266,13 @@ public partial class Ship : RigidBody2D
             RightLegTouching = ship.RightLegTouching;
         }
 
+        public NDArray ToNDArray()
+        {
+            NDArray arr = new NDArray(new float[] { X, Y, XVelocity, YVelocity, Angle, AngularVelocity, LeftLegTouching ? 1f : 0f, RightLegTouching ? 1f : 0f });
+            arr = arr.astype(TF_DataType.TF_FLOAT);
+            return arr.reshape((1, 8));
+        }
+
         public float X;
         public float Y;
         public float XVelocity;
@@ -271,12 +283,92 @@ public partial class Ship : RigidBody2D
         public bool RightLegTouching;
     }
 
-    public class Action
+    public enum Action
     {
-        public bool Nothing;
-        public bool ThrustDown;
-        public bool ThrustLeft;
-        public bool ThrustRight;
+        Nothing,
+        ThrustDown,
+        ThrustLeft,
+        ThrustRight
+    }
+
+    public interface IActionSelector
+    {
+        Action GetNextAction(Ship ship);
+    }
+
+    public class PlayerActionSelector : IActionSelector
+    {
+        public Action GetNextAction(Ship _)
+        {
+            Action action;
+
+            // Use else-if here to restrict our action space to a size of 4
+            if (Input.IsActionPressed("thrust_down"))
+            {
+                action = Action.ThrustDown;
+            }
+            else if (Input.IsActionPressed("thrust_right"))
+            {
+                action = Action.ThrustRight;
+            }
+            else if (Input.IsActionPressed("thrust_left"))
+            {
+                action = Action.ThrustLeft;
+            }
+            else
+            {
+                action = Action.Nothing;
+            }
+
+            return action;
+        }
+    }
+
+    public class DQLActionSelector : IActionSelector
+    {
+        public float Epsilon;
+        public Sequential QNetwork;
+        private RandomNumberGenerator _rng;
+
+        public DQLActionSelector(float epsilon, Sequential qNetwork, RandomNumberGenerator rng)
+        {
+            Epsilon = epsilon;
+            QNetwork = qNetwork;
+            _rng = rng;
+        }
+
+        public Action GetNextAction(Ship ship)
+        {
+            if (_rng.Randf() > Epsilon) // Pick best action from Q-Network
+            {
+                NDArray state = ship.ToState().ToNDArray();
+                Tensor prediction = QNetwork.predict(state);
+                var bestActionArg = np.argmax(prediction[0][0].numpy());
+                return GetActionFromIndex(bestActionArg);
+            }
+            else // Random action
+            {
+                int rand = _rng.RandiRange(0, 2);
+                return GetActionFromIndex(rand);
+            }
+        }
+
+        private Action GetActionFromIndex(int ind)
+        {
+            switch (ind)
+            {
+                case 0:
+                    return Action.Nothing;
+                case 1:
+                    return Action.ThrustDown;
+                case 2:
+                    return Action.ThrustLeft;
+                case 3:
+                    return Action.ThrustRight;
+                default:
+                    return Action.Nothing;
+            }
+        }
     }
 }
 
