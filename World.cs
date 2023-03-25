@@ -11,6 +11,7 @@ public partial class World : Node
 	private Ship _ship;
 	private Marker2D _startPosition;
 	private RandomNumberGenerator _rng;
+	private Hud _hud;
 
 	private float _score;
 
@@ -20,8 +21,9 @@ public partial class World : Node
         _rng = new RandomNumberGenerator();
         _ship = GetNode<Ship>("Ship");
         _startPosition = GetNode<Marker2D>("StartPosition");
+		_hud = GetNode<Hud>("HUD");
 
-		ResetShip();
+        ResetShip();
     }
 
 	// Called every frame. 'delta' is the elapsed time since the previous frame.
@@ -51,6 +53,7 @@ public partial class World : Node
 	private void OnScoreChange(float score)
 	{
 		_score += score;
+		_hud.UpdateScore(_score);
 	}
 
 	private void OnSimulationEnd()
