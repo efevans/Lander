@@ -13,7 +13,19 @@ public partial class World : Node
 	private RandomNumberGenerator _rng;
 	private Hud _hud;
 
-	private float _score;
+	private float _score = 0;
+	private float Score 
+	{ 
+		get
+		{
+			return _score;
+		}
+		set 
+		{
+			_score = value;
+			_hud.UpdateScore(_score);
+		}
+	}
 
     // Called when the node enters the scene tree for the first time.
     public override void _Ready()
@@ -29,12 +41,14 @@ public partial class World : Node
 	// Called every frame. 'delta' is the elapsed time since the previous frame.
 	public override void _Process(double delta)
 	{
-		GD.Print(_score);
+		GD.Print(Score);
 	}
 
 	private void ResetShip()
-	{
-		Vector2 position = _startPosition.Position;
+    {
+        Score = 0;
+
+        Vector2 position = _startPosition.Position;
 		Vector2 velocity = new Vector2(_rng.RandfRange(-1f, 1f), _rng.RandfRange(-1f, 1f));
 		velocity = velocity.Normalized();
 		velocity *= _rng.RandiRange(0, MaxStartVelocity);
@@ -44,22 +58,15 @@ public partial class World : Node
 		_ship.Reset(position, velocity, angle, angularVelocity);
     }
 
-    private void OnTimerTimeout()
-	{
-		_score = 0;
-		ResetShip();
-	}
-
 	private void OnScoreChange(float score)
 	{
-		_score += score;
-		_hud.UpdateScore(_score);
+        Score += score;
 	}
 
 	private void OnSimulationEnd()
     {
 		GD.Print("SimulationEnd signal received");
-		GD.Print($"End score was: {_score}");
+		GD.Print($"End score was: {Score}");
         ResetShip();
 	}
 }

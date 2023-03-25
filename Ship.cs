@@ -46,7 +46,8 @@ public partial class Ship : RigidBody2D
         _resetNextTick = true;
         _maxMissionLengthTimer.Stop();
         _maxMissionLengthTimer.Start();
-
+        SetDeferred("_simulationInProgress", true);
+        //_simulationInProgress = true;
     }
 
     public override void _IntegrateForces(PhysicsDirectBodyState2D state)
@@ -78,7 +79,7 @@ public partial class Ship : RigidBody2D
         {
             var translatedForce = Transform.BasisXform(Vector2.Up * DownwardThrust);
             ApplyForce(translatedForce);
-            EmitSignal(SignalName.ScoreChange, DownwardThrustReward);
+            ApplyReward(DownwardThrustReward);
         }
 
         if (Input.IsActionPressed("thrust_right"))
@@ -86,7 +87,7 @@ public partial class Ship : RigidBody2D
             var translatedPosition = Transform.BasisXform(_rightThruster.Position);
             var translatedForce = Transform.BasisXform(Vector2.Left * SideThrust);
             ApplyForce(translatedForce, translatedPosition);
-            EmitSignal(SignalName.ScoreChange, SideThrustReward);
+            ApplyReward(SideThrustReward);
         }
 
         if (Input.IsActionPressed("thrust_left"))
@@ -94,7 +95,7 @@ public partial class Ship : RigidBody2D
             var translatedPosition = Transform.BasisXform(_leftThruster.Position);
             var translatedForce = Transform.BasisXform(Vector2.Right * SideThrust);
             ApplyForce(translatedForce, translatedPosition);
-            EmitSignal(SignalName.ScoreChange, SideThrustReward);
+            ApplyReward(SideThrustReward);
         }
 
         if (_numberOfTouchingLegs == 2)
@@ -105,8 +106,8 @@ public partial class Ship : RigidBody2D
                 if (_touchdownDownDuration > _requiredTouchdownDurationForWin)
                 {
                     GD.Print("Won!");
-                    EmitSignal(SignalName.ScoreChange, WinReward);
-                    EmitSignal(SignalName.SimulationEnd);
+                    ApplyReward(WinReward);
+                    EndSimulation();
                 }
             }
             else
@@ -127,6 +128,7 @@ public partial class Ship : RigidBody2D
     private bool _wasTouchingDownLastFrame = false;
     private TimeSpan _touchdownDownDuration;
     private readonly TimeSpan _requiredTouchdownDurationForWin = new(0, 0, 1);
+    private bool _simulationInProgress = false;
 
     private void OnBodyShapeEntered(Rid _, Node _2, long _3, long local_shape_index)
 	{
@@ -140,14 +142,14 @@ public partial class Ship : RigidBody2D
             if (false == _anyLegHasTouched)
             {
                 _anyLegHasTouched = true;
-                EmitSignal(SignalName.ScoreChange, FirstLegTouchReward);
+                ApplyReward(FirstLegTouchReward);
             }
 		}
         else if (localCollisionObject.Name.ToString().Contains("Body"))
         {
             GD.Print("CRASHED!");
-            EmitSignal(SignalName.ScoreChange, CrashReward);
-            EmitSignal(SignalName.SimulationEnd);
+            ApplyReward(CrashReward);
+            EndSimulation();
         }
     }
 
@@ -182,9 +184,26 @@ public partial class Ship : RigidBody2D
 
     private void OnMaxMissionLengthTimer()
     {
-        EmitSignal(SignalName.ScoreChange, ExceededMaxMissionLengthReward);
+        ApplyReward(ExceededMaxMissionLengthReward);
+        EndSimulation();
         GD.Print("Max Mission Lenght Exceeded");
-        EmitSignal(SignalName.SimulationEnd);
+    }
+
+    private void EndSimulation()
+    {
+        if (_simulationInProgress)
+        {
+            EmitSignal(SignalName.SimulationEnd);
+            _simulationInProgress = false;
+        }
+    }
+
+    private void ApplyReward(float value)
+    {
+        if (_simulationInProgress)
+        {
+            EmitSignal(SignalName.ScoreChange, value);
+        }
     }
 }
 
