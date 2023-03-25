@@ -1,6 +1,7 @@
 using Godot;
 using Godot.Collections;
 using System;
+using System.Collections.Generic;
 
 public partial class Ship : RigidBody2D
 {
@@ -30,6 +31,8 @@ public partial class Ship : RigidBody2D
     private Sprite2D _rightThruster;
     private Timer _maxMissionLengthTimer;
 
+    private List<StateActionPair> _stateActions = new List<StateActionPair>();
+
     private bool _resetNextTick = false;
     private ResetOption _resetOption;
     private struct ResetOption
@@ -46,8 +49,10 @@ public partial class Ship : RigidBody2D
         _resetNextTick = true;
         _maxMissionLengthTimer.Stop();
         _maxMissionLengthTimer.Start();
-        SetDeferred("_simulationInProgress", true);
-        //_simulationInProgress = true;
+
+        // Setting immediately can cause the current simulation to set "In progress" to false again, so 
+        // defer it to ensure we the current physics steps moves up back to reset position first
+        SetDeferred("_simulationInProgress", true); 
     }
 
     public override void _IntegrateForces(PhysicsDirectBodyState2D state)
@@ -75,30 +80,36 @@ public partial class Ship : RigidBody2D
 
 	public override void _PhysicsProcess(double delta)
 	{
+        Action action = new Action();
+
+        // Use else-if here to restrict our action space to a size of 4
         if (Input.IsActionPressed("thrust_down"))
         {
+            action.ThrustDown = true;
             var translatedForce = Transform.BasisXform(Vector2.Up * DownwardThrust);
             ApplyForce(translatedForce);
             ApplyReward(DownwardThrustReward);
-        }
-
-        if (Input.IsActionPressed("thrust_right"))
+        } 
+        else if (Input.IsActionPressed("thrust_right"))
         {
             var translatedPosition = Transform.BasisXform(_rightThruster.Position);
             var translatedForce = Transform.BasisXform(Vector2.Left * SideThrust);
             ApplyForce(translatedForce, translatedPosition);
             ApplyReward(SideThrustReward);
-        }
-
-        if (Input.IsActionPressed("thrust_left"))
+        } 
+        else if (Input.IsActionPressed("thrust_left"))
         {
             var translatedPosition = Transform.BasisXform(_leftThruster.Position);
             var translatedForce = Transform.BasisXform(Vector2.Right * SideThrust);
             ApplyForce(translatedForce, translatedPosition);
             ApplyReward(SideThrustReward);
         }
+        else
+        {
+            action.Nothing = true;
+        }
 
-        if (_numberOfTouchingLegs == 2)
+        if (LeftLegTouching && RightLegTouching)
         {
             if (_wasTouchingDownLastFrame)
             {
@@ -120,11 +131,21 @@ public partial class Ship : RigidBody2D
         {
             _wasTouchingDownLastFrame = false;
         }
+
+        State state = new State(this);
+        StateActionPair pair = new StateActionPair()
+        {
+            State = state,
+            Action = action
+        };
+        _stateActions.Add(pair);
+        GD.Print($"Size of state action pair buffer: {_stateActions.Count}");
     }
 
-    private Dictionary<int, CollisionPolygon2D> CollisionObjectsById { get; set; } = new Dictionary<int, CollisionPolygon2D>();
+    private System.Collections.Generic.Dictionary<int, CollisionPolygon2D> CollisionObjectsById { get; set; } = new System.Collections.Generic.Dictionary<int, CollisionPolygon2D>();
     private bool _anyLegHasTouched = false;
-    private int _numberOfTouchingLegs = 0;
+    public bool LeftLegTouching { get; private set; } = false;
+    public bool RightLegTouching { get; private set; } = false;
     private bool _wasTouchingDownLastFrame = false;
     private TimeSpan _touchdownDownDuration;
     private readonly TimeSpan _requiredTouchdownDurationForWin = new(0, 0, 1);
@@ -137,14 +158,22 @@ public partial class Ship : RigidBody2D
 
 		if (localCollisionObject.Name.ToString().Contains("Leg"))
 		{
-			_numberOfTouchingLegs++;
-			GD.Print(_numberOfTouchingLegs);
-            if (false == _anyLegHasTouched)
+			if (false == _anyLegHasTouched)
             {
                 _anyLegHasTouched = true;
                 ApplyReward(FirstLegTouchReward);
             }
-		}
+
+            if (localCollisionObject.Name.ToString().Contains("Left"))
+            {
+                LeftLegTouching = true;
+            }
+            else
+            {
+                RightLegTouching = true;
+            }
+
+        }
         else if (localCollisionObject.Name.ToString().Contains("Body"))
         {
             GD.Print("CRASHED!");
@@ -160,8 +189,14 @@ public partial class Ship : RigidBody2D
 
         if (localCollisionObject.Name.ToString().Contains("Leg"))
         {
-            _numberOfTouchingLegs--;
-            GD.Print(_numberOfTouchingLegs);
+            if (localCollisionObject.Name.ToString().Contains("Left"))
+            {
+                LeftLegTouching = false;
+            }
+            else
+            {
+                RightLegTouching = false;
+            }
         }
     }
 
@@ -204,6 +239,44 @@ public partial class Ship : RigidBody2D
         {
             EmitSignal(SignalName.ScoreChange, value);
         }
+    }
+
+    public class StateActionPair
+    {
+        public State State;
+        public Action Action;
+    }
+
+    public class State
+    {
+        public State(Ship ship)
+        {
+            X = ship.Position.X;
+            Y = ship.Position.Y;
+            XVelocity = ship.LinearVelocity.X;
+            YVelocity = ship.LinearVelocity.Y;
+            Angle = ship.Rotation;
+            AngularVelocity = ship.AngularVelocity;
+            LeftLegTouching = ship.LeftLegTouching;
+            RightLegTouching = ship.RightLegTouching;
+        }
+
+        public float X;
+        public float Y;
+        public float XVelocity;
+        public float YVelocity;
+        public float Angle;
+        public float AngularVelocity;
+        public bool LeftLegTouching;
+        public bool RightLegTouching;
+    }
+
+    public class Action
+    {
+        public bool Nothing;
+        public bool ThrustDown;
+        public bool ThrustLeft;
+        public bool ThrustRight;
     }
 }
 
