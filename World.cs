@@ -52,4 +52,11 @@ public partial class World : Node
 	{
 		_score += score;
 	}
+
+	private void OnSimulationEnd()
+    {
+		GD.Print("SimulationEnd signal received");
+		GD.Print($"End score was: {_score}");
+        ResetShip();
+	}
 }

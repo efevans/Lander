@@ -20,3 +20,4 @@ gravity_scale = 1.0
 position = Vector2(587, 63)
 
 [connection signal="ScoreChange" from="Ship" to="." method="OnScoreChange"]
+[connection signal="SimulationEnd" from="Ship" to="." method="OnSimulationEnd"]

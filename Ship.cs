@@ -6,6 +6,8 @@ public partial class Ship : RigidBody2D
 {
     [Signal]
     public delegate void ScoreChangeEventHandler(float val);
+    [Signal]
+    public delegate void SimulationEndEventHandler(float val);
 
     [Export]
     public int DownwardThrust = 300;
@@ -104,6 +106,7 @@ public partial class Ship : RigidBody2D
                 {
                     GD.Print("Won!");
                     EmitSignal(SignalName.ScoreChange, WinReward);
+                    EmitSignal(SignalName.SimulationEnd);
                 }
             }
             else
@@ -144,6 +147,7 @@ public partial class Ship : RigidBody2D
         {
             GD.Print("CRASHED!");
             EmitSignal(SignalName.ScoreChange, CrashReward);
+            EmitSignal(SignalName.SimulationEnd);
         }
     }
 
@@ -180,6 +184,7 @@ public partial class Ship : RigidBody2D
     {
         EmitSignal(SignalName.ScoreChange, ExceededMaxMissionLengthReward);
         GD.Print("Max Mission Lenght Exceeded");
+        EmitSignal(SignalName.SimulationEnd);
     }
 }
 
