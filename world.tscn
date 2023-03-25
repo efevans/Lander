@@ -6,8 +6,8 @@
 
 [node name="World" type="Node"]
 script = ExtResource("1_2c0ib")
-MaxStartVelocity = 265
-MaxStartAngularVelocity = 6.009
+MaxStartVelocity = 221
+MaxStartAngularVelocity = 4.977
 
 [node name="Ground" parent="." instance=ExtResource("2_07j1p")]
 
@@ -19,7 +19,4 @@ gravity_scale = 1.0
 [node name="StartPosition" type="Marker2D" parent="."]
 position = Vector2(587, 63)
 
-[node name="Timer" type="Timer" parent="."]
-wait_time = 5.0
-
-[connection signal="timeout" from="Timer" to="." method="OnTimerTimeout"]
+[connection signal="ScoreChange" from="Ship" to="." method="OnScoreChange"]

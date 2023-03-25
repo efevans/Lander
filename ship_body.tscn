@@ -17,8 +17,14 @@ max_contacts_reported = 3
 contact_monitor = true
 can_sleep = false
 script = ExtResource("1_t4hjt")
-DownwardThrust = 257
-SideThrust = 59
+DownwardThrust = 702
+DownwardThrustReward = -0.01
+SideThrust = 137
+SideThrustReward = -0.003
+WinReward = 100.0
+CrashReward = -100.0
+FirstLegTouchReward = 10.0
+ExceededMaxMissionLengthReward = -100.0
 
 [node name="BodyCollision" type="CollisionPolygon2D" parent="."]
 scale = Vector2(0.105, 0.105)
@@ -64,5 +70,9 @@ rotation = -1.5708
 scale = Vector2(0.1, 0.1)
 texture = ExtResource("4_5gptl")
 
+[node name="MaxMissionLengthTimer" type="Timer" parent="."]
+wait_time = 20.0
+
 [connection signal="body_shape_entered" from="." to="." method="OnBodyShapeEntered"]
 [connection signal="body_shape_exited" from="." to="." method="OnBodyShapeExited"]
+[connection signal="timeout" from="MaxMissionLengthTimer" to="." method="OnMaxMissionLengthTimer"]

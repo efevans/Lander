@@ -12,18 +12,22 @@ public partial class World : Node
 	private Marker2D _startPosition;
 	private RandomNumberGenerator _rng;
 
+	private float _score;
+
     // Called when the node enters the scene tree for the first time.
     public override void _Ready()
 	{
         _rng = new RandomNumberGenerator();
         _ship = GetNode<Ship>("Ship");
         _startPosition = GetNode<Marker2D>("StartPosition");
-		GetNode<Timer>("Timer").Start();
+
+		ResetShip();
     }
 
 	// Called every frame. 'delta' is the elapsed time since the previous frame.
 	public override void _Process(double delta)
 	{
+		GD.Print(_score);
 	}
 
 	private void ResetShip()
@@ -40,6 +44,12 @@ public partial class World : Node
 
     private void OnTimerTimeout()
 	{
+		_score = 0;
 		ResetShip();
+	}
+
+	private void OnScoreChange(float score)
+	{
+		_score += score;
 	}
 }
