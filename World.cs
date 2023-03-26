@@ -1,7 +1,9 @@
 using Godot;
 using System.Collections.Generic;
+using System.Linq;
 using Tensorflow;
 using Tensorflow.NumPy;
+using static Ship;
 using static Tensorflow.Binding;
 using static Tensorflow.KerasApi;
 
@@ -21,11 +23,12 @@ public partial class World : Node
 
 	private Sequential _qNetwork;
 	private Sequential _targetQNetwork;
-    private const int STATE_SIZE = 8;
+    public const int STATE_SIZE = 8;
     private const int ACTION_SIZE = 4;
+    private const int BUFFER_SIZE = 100000;
     private float _epsilon = 1;
-	private Queue<Ship.StateActionPair> _stateActions;
-	private float _score = 0;
+    private readonly FixedSizeList<Experience> _experience = new(BUFFER_SIZE);
+    private float _score = 0;
 	private float Score 
 	{ 
 		get
@@ -47,6 +50,10 @@ public partial class World : Node
         _startPosition = GetNode<Marker2D>("StartPosition");
 		_hud = GetNode<Hud>("HUD");
 
+        _ship.SaveExperience = SaveExperience;
+        _ship.QNetworkFunc = () => { return _qNetwork; };
+        _ship.TargetQNetworkFunc = () => { return _targetQNetwork; };
+        _ship.ExperienceFun = () => { return _experience; };
 		InitNeuralNetworks();
 
         ResetShip();
@@ -118,5 +125,77 @@ public partial class World : Node
         }
 
 		return (q_network, target_q_network);
+    }
+
+    public void SaveExperience(State state, Action action, float reward, State nextState, bool ended)
+    {
+        var exp = new Experience(state, action, reward, nextState, ended);
+        _experience.Add(exp);
+    }
+
+    public class Experience
+    {
+        public Experience(State state, Action action, float reward, State nextState, bool ended)
+        {
+            State = state;
+            NextState = nextState;
+            Reward = reward;
+            Action = action;
+            Ended = ended;
+        }
+
+        public State State;
+        public Action Action;
+        public float Reward;
+        public State NextState;
+        public bool Ended;
+    }
+
+    public class FixedSizeList<T>
+    {
+        private readonly List<T> _list = new List<T>();
+        private int _limit;
+
+        public int Count => _list.Count;
+
+        public FixedSizeList(int limit)
+        {
+            _limit = limit;
+        }
+
+        public void Add(T obj)
+        {
+            _list.add(obj);
+            if (_list.Count > _limit)
+            {
+
+            }
+            while (_list.Count > _limit)
+            {
+                _list.RemoveAt(_list.Count - 1);
+            }
+        }
+
+        public List<T> Get(int count, RandomNumberGenerator rng = null)
+        {
+            List<T> values = new List<T>();
+            HashSet<int> indecies = new HashSet<int>();
+            if (rng == null)
+            {
+                rng = new RandomNumberGenerator();
+            }
+
+            for (int i = 0; i < count; i++)
+            {
+                int index = rng.RandiRange(0, _list.Count - 1);
+                while (true == indecies.Contains(index))
+                {
+                    index = rng.RandiRange(0, _list.Count - 1);
+                }
+                indecies.Add(index);
+            }
+
+            return indecies.Select(i => _list[i]).ToList();
+        }
     }
 }

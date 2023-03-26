@@ -2,9 +2,17 @@ using Godot;
 using Godot.Collections;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Tensorflow;
+using Tensorflow.Gradients;
 using Tensorflow.Keras.Engine;
+using Tensorflow.Keras.Losses;
+using Tensorflow.Keras.Optimizers;
 using Tensorflow.NumPy;
+using Tensorflow.Operations.Losses;
+using static Tensorflow.Binding;
+using static Tensorflow.KerasApi;
+using static World;
 
 public partial class Ship : RigidBody2D
 {
@@ -31,12 +39,23 @@ public partial class Ship : RigidBody2D
     public float ExceededMaxMissionLengthReward;
 
     public IActionSelector ActionSelector = new PlayerActionSelector();
+    public Action<State, Action, float, State, bool> SaveExperience;
+    public Func<Sequential> QNetworkFunc;
+    private Sequential QNetwork => QNetworkFunc();
+    public Func<Sequential> TargetQNetworkFunc;
+    private Sequential TargetQNetwork => TargetQNetworkFunc();
+    public Func<FixedSizeList<Experience>> ExperienceFun;
+    private FixedSizeList<Experience> Experiences => ExperienceFun();
+
+
+    private int NUM_STEPS_FOR_UPDATE = 4;
+    private int UPDATE_BATCH_SIZE = 64;
+    private float DISCOUNT_FACTOR = 0.995f;
+    private float SOFT_UPDATE_FACTOR = 0.001f;
 
     private Sprite2D _leftThruster;
     private Sprite2D _rightThruster;
     private Timer _maxMissionLengthTimer;
-
-    private readonly List<StateActionPair> _stateActions = new();
 
     private bool _resetNextTick = false;
     private ResetOption _resetOption;
@@ -64,7 +83,16 @@ public partial class Ship : RigidBody2D
     {
         if (_resetNextTick)
         {
+            _firstStepOfSimulation = true;
             _resetNextTick = false;
+            _simulationEndedLastStep = false;
+            _rewardSinceLastStep = 0;
+            _learnStepCount = 0;
+
+            _anyLegHasTouched = false;
+            _leftLegTouching = false;
+            _rightLegTouching = false;
+
             var transform = state.Transform;
             transform.Origin.X = _resetOption.Position.X;
             transform.Origin.Y = _resetOption.Position.Y;
@@ -85,6 +113,17 @@ public partial class Ship : RigidBody2D
 
     public override void _PhysicsProcess(double delta)
     {
+        State currState = ToState();
+
+        if (false == _firstStepOfSimulation)
+        {
+            SaveExperience(_lastState, _lastAction, _rewardSinceLastStep, currState, _simulationEndedLastStep);
+        }
+
+        _firstStepOfSimulation = false;
+        _simulationEndedLastStep = false;
+        _rewardSinceLastStep = 0;
+
         Action action = ActionSelector.GetNextAction(this);
 
         // Use else-if here to restrict our action space to a size of 4
@@ -109,7 +148,7 @@ public partial class Ship : RigidBody2D
             ApplyReward(SideThrustReward);
         }
 
-        if (LeftLegTouching && RightLegTouching)
+        if (_leftLegTouching && _rightLegTouching)
         {
             if (_wasTouchingDownLastFrame)
             {
@@ -132,24 +171,30 @@ public partial class Ship : RigidBody2D
             _wasTouchingDownLastFrame = false;
         }
 
-        State state = new(this);
-        StateActionPair pair = new()
-        {
-            State = state,
-            Action = action
-        };
-        _stateActions.Add(pair);
-        GD.Print($"Size of state action pair buffer: {_stateActions.Count}");
+        Learn();
+
+        _lastState = currState;
+        _lastAction = action;
     }
 
-    private System.Collections.Generic.Dictionary<int, CollisionPolygon2D> CollisionObjectsById { get; set; } = new System.Collections.Generic.Dictionary<int, CollisionPolygon2D>();
+    // Store these values from a previous step to allow us to evaluate how well it did
+    private Action _lastAction;
+    private State _lastState;
+    private float _rewardSinceLastStep;
+
+    // State to track progress on rewards
+    private int _learnStepCount = 0;
+    private bool _firstStepOfSimulation = true;
     private bool _anyLegHasTouched = false;
-    public bool LeftLegTouching { get; private set; } = false;
-    public bool RightLegTouching { get; private set; } = false;
+    private bool _leftLegTouching = false;
+    private bool _rightLegTouching = false;
     private bool _wasTouchingDownLastFrame = false;
     private TimeSpan _touchdownDownDuration;
     private readonly TimeSpan _requiredTouchdownDurationForWin = new(0, 0, 1);
+    private bool _simulationEndedLastStep = false; // For calculating Q prime
     private bool _simulationInProgress = false;
+
+    private System.Collections.Generic.Dictionary<int, CollisionPolygon2D> CollisionObjectsById { get; set; } = new System.Collections.Generic.Dictionary<int, CollisionPolygon2D>();
 
     private void OnBodyShapeEntered(Rid _, Godot.Node _2, long _3, long local_shape_index)
     {
@@ -166,11 +211,11 @@ public partial class Ship : RigidBody2D
 
             if (localCollisionObject.Name.ToString().Contains("Left"))
             {
-                LeftLegTouching = true;
+                _leftLegTouching = true;
             }
             else
             {
-                RightLegTouching = true;
+                _rightLegTouching = true;
             }
 
         }
@@ -191,11 +236,11 @@ public partial class Ship : RigidBody2D
         {
             if (localCollisionObject.Name.ToString().Contains("Left"))
             {
-                LeftLegTouching = false;
+                _leftLegTouching = false;
             }
             else
             {
-                RightLegTouching = false;
+                _rightLegTouching = false;
             }
         }
     }
@@ -228,6 +273,7 @@ public partial class Ship : RigidBody2D
     {
         if (_simulationInProgress)
         {
+            _simulationEndedLastStep = true;
             EmitSignal(SignalName.SimulationEnd);
             _simulationInProgress = false;
         }
@@ -237,19 +283,79 @@ public partial class Ship : RigidBody2D
     {
         if (_simulationInProgress)
         {
+            _rewardSinceLastStep += value;
             EmitSignal(SignalName.ScoreChange, value);
         }
+    }
+
+    private void Learn()
+    {
+        _learnStepCount++;
+
+        if (_learnStepCount % NUM_STEPS_FOR_UPDATE != 0
+            || Experiences.Count < UPDATE_BATCH_SIZE)
+        {
+            return;
+        }
+
+        var optimizer = new Adam(learning_rate: 0.001f);
+
+        using (var g = tf.GradientTape())
+        {
+            var loss = CalculateLoss(Experiences.Get(UPDATE_BATCH_SIZE), DISCOUNT_FACTOR, QNetwork, TargetQNetwork);
+
+            // Get the gradients of the loss with respect to the weights.
+            var gradients = g.gradient(loss, QNetwork.Weights);
+
+            // Update the weights of the q_network.
+            optimizer.apply_gradients(zip(gradients, QNetwork.TrainableVariables.Select(x => x as ResourceVariable)));
+
+            // Update the weights of target q_network
+            foreach (var (qWeights, targetQWeights) in zip(QNetwork.Weights, TargetQNetwork.Weights))
+            {
+                targetQWeights.assign(
+                    SOFT_UPDATE_FACTOR * qWeights.AsTensor() 
+                    + ((1.0 - SOFT_UPDATE_FACTOR) * targetQWeights.AsTensor()));
+            }
+        }
+    }
+
+    private static Tensor CalculateLoss(List<Experience> experiences, float gamma, Sequential qNetwork, Sequential targetQNetwork)
+    {
+        NDArray states = new(experiences.Select(e => e.State).ToArray());
+        states = states.reshape((-1, STATE_SIZE));
+
+        NDArray rewards = new(experiences.Select(e => e.Reward).ToArray());
+
+        NDArray nextStates = new(experiences.Select(e => e.NextState).ToArray());
+        nextStates = nextStates.reshape((-1, STATE_SIZE));
+
+        NDArray done = new(experiences.Select(e => e.Ended ? 1 : 0).ToArray());
+
+        var maxQSA = tf.reduce_max(targetQNetwork.predict(nextStates));
+
+        var yTargets = rewards + ((1 - done) * gamma * maxQSA);
+
+        var qValues = qNetwork.predict(states);
+
+        List<float> selectedQValues = new();
+        int i = 0;
+        foreach (Action action in experiences.Select(e => e.Action))
+        {
+            selectedQValues.Add(((float)qValues[0][i][(int)action]));
+        }
+
+        Tensor tensorQValues = new(selectedQValues.ToArray());
+
+        // Calculated MSE loss
+        var loss = tf.reduce_sum(tf.pow(tensorQValues - yTargets, 2)) / (2f * yTargets.shape[0]);
+
+        return loss;
     }
 
     public State ToState()
     {
         return new State(this);
-    }
-
-    public class StateActionPair
-    {
-        public State State;
-        public Action Action;
     }
 
     public class State
@@ -262,13 +368,13 @@ public partial class Ship : RigidBody2D
             YVelocity = ship.LinearVelocity.Y;
             Angle = ship.Rotation;
             AngularVelocity = ship.AngularVelocity;
-            LeftLegTouching = ship.LeftLegTouching;
-            RightLegTouching = ship.RightLegTouching;
+            LeftLegTouching = ship._leftLegTouching;
+            RightLegTouching = ship._rightLegTouching;
         }
 
         public NDArray ToNDArray()
         {
-            NDArray arr = new NDArray(new float[] { X, Y, XVelocity, YVelocity, Angle, AngularVelocity, LeftLegTouching ? 1f : 0f, RightLegTouching ? 1f : 0f });
+            NDArray arr = new(new float[] { X, Y, XVelocity, YVelocity, Angle, AngularVelocity, LeftLegTouching ? 1f : 0f, RightLegTouching ? 1f : 0f });
             arr = arr.astype(TF_DataType.TF_FLOAT);
             return arr.reshape((1, 8));
         }
@@ -285,10 +391,10 @@ public partial class Ship : RigidBody2D
 
     public enum Action
     {
-        Nothing,
-        ThrustDown,
-        ThrustLeft,
-        ThrustRight
+        Nothing = 0,
+        ThrustDown = 1,
+        ThrustLeft = 2,
+        ThrustRight = 3
     }
 
     public interface IActionSelector
@@ -348,12 +454,12 @@ public partial class Ship : RigidBody2D
             }
             else // Random action
             {
-                int rand = _rng.RandiRange(0, 2);
+                int rand = _rng.RandiRange(0, 3);
                 return GetActionFromIndex(rand);
             }
         }
 
-        private Action GetActionFromIndex(int ind)
+        private static Action GetActionFromIndex(int ind)
         {
             switch (ind)
             {
