@@ -151,7 +151,7 @@ public partial class Ship : RigidBody2D
     private readonly TimeSpan _requiredTouchdownDurationForWin = new(0, 0, 1);
     private bool _simulationInProgress = false;
 
-    private void OnBodyShapeEntered(Rid _, Node _2, long _3, long local_shape_index)
+    private void OnBodyShapeEntered(Rid _, Godot.Node _2, long _3, long local_shape_index)
     {
         CollisionPolygon2D localCollisionObject = GetLocalCollisionObject(local_shape_index);
         GD.Print($"Found leg {localCollisionObject.Name} Landing");
@@ -182,7 +182,7 @@ public partial class Ship : RigidBody2D
         }
     }
 
-    private void OnBodyShapeExited(Rid _, Node _2, long _3, long local_shape_index)
+    private void OnBodyShapeExited(Rid _, Godot.Node _2, long _3, long local_shape_index)
     {
         CollisionPolygon2D localCollisionObject = GetLocalCollisionObject(local_shape_index);
         GD.Print($"Found leg {localCollisionObject.Name} Taking off");
