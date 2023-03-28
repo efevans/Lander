@@ -3,6 +3,7 @@ using Godot.Collections;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection.Metadata;
 using Tensorflow;
 using Tensorflow.Gradients;
 using Tensorflow.Keras.Engine;
@@ -10,6 +11,7 @@ using Tensorflow.Keras.Losses;
 using Tensorflow.Keras.Optimizers;
 using Tensorflow.NumPy;
 using Tensorflow.Operations.Losses;
+using static Ship;
 using static Tensorflow.Binding;
 using static Tensorflow.KerasApi;
 using static World;
@@ -38,24 +40,26 @@ public partial class Ship : RigidBody2D
     [Export]
     public float ExceededMaxMissionLengthReward;
 
-    public IActionSelector ActionSelector = new PlayerActionSelector();
-    public Action<State, Action, float, State, bool> SaveExperience;
-    public Func<Sequential> QNetworkFunc;
-    private Sequential QNetwork => QNetworkFunc();
-    public Func<Sequential> TargetQNetworkFunc;
-    private Sequential TargetQNetwork => TargetQNetworkFunc();
-    public Func<FixedSizeList<Experience>> ExperienceFun;
-    private FixedSizeList<Experience> Experiences => ExperienceFun();
-
+    private Sequential _qNetwork;
+    private Sequential _targetQNetwork;
+    public const int STATE_SIZE = 8;
+    private const int ACTION_SIZE = 4;
+    private const float EPSILON_MIN = 0.01f;
+    private const float EPSILON_DECAY = 0.995f;
+    private float _epsilon = 1;
 
     private int NUM_STEPS_FOR_UPDATE = 4;
     private int UPDATE_BATCH_SIZE = 64;
     private float DISCOUNT_FACTOR = 0.995f;
     private float SOFT_UPDATE_FACTOR = 0.001f;
+    private const int BUFFER_SIZE = 100000;
+    private readonly FixedSizeExperienceList _experience = new(BUFFER_SIZE);
 
+    public IActionSelector ActionSelector = new PlayerActionSelector();
     private Sprite2D _leftThruster;
     private Sprite2D _rightThruster;
     private Timer _maxMissionLengthTimer;
+    private RandomNumberGenerator _rng;
 
     private bool _resetNextTick = false;
     private ResetOption _resetOption;
@@ -109,6 +113,9 @@ public partial class Ship : RigidBody2D
         _leftThruster = GetNode<Sprite2D>("ThrusterLeftSprite");
         _rightThruster = GetNode<Sprite2D>("ThrusterRightSprite");
         _maxMissionLengthTimer = GetNode<Timer>("MaxMissionLengthTimer");
+        _rng = new RandomNumberGenerator();
+
+        ActionSelector = new DQLActionSelector(_epsilon, _qNetwork, _rng);
     }
 
     public override void _PhysicsProcess(double delta)
@@ -274,9 +281,15 @@ public partial class Ship : RigidBody2D
         if (_simulationInProgress)
         {
             _simulationEndedLastStep = true;
+            _epsilon = UpdateEpsilon(_epsilon);
             EmitSignal(SignalName.SimulationEnd);
             _simulationInProgress = false;
         }
+    }
+
+    private static float UpdateEpsilon(float epsilon)
+    {
+        return Math.Max(EPSILON_MIN, EPSILON_DECAY * epsilon);
     }
 
     private void ApplyReward(float value)
@@ -288,67 +301,96 @@ public partial class Ship : RigidBody2D
         }
     }
 
+    private void InitNeuralNetworks()
+    {
+        (_qNetwork, _targetQNetwork) = GetDefaultQNetworks();
+    }
+
+    private (Sequential q_network, Sequential target_q_network) GetDefaultQNetworks()
+    {
+        var q_network = keras.Sequential();
+        q_network.add(keras.layers.Input(shape: STATE_SIZE));
+        q_network.add(keras.layers.Dense(64, activation: keras.activations.Relu));
+        q_network.add(keras.layers.Dense(64, activation: keras.activations.Relu));
+        q_network.add(keras.layers.Dense(ACTION_SIZE, activation: keras.activations.Linear));
+
+        q_network.compile(optimizer: keras.optimizers.Adam(learning_rate: 0.002f),
+            loss: keras.losses.MeanSquaredError(),
+            System.Array.Empty<string>());
+
+        var target_q_network = keras.Sequential();
+        target_q_network.add(keras.layers.Input(shape: STATE_SIZE));
+        target_q_network.add(keras.layers.Dense(64, activation: keras.activations.Relu));
+        target_q_network.add(keras.layers.Dense(64, activation: keras.activations.Relu));
+        target_q_network.add(keras.layers.Dense(ACTION_SIZE, activation: keras.activations.Linear));
+
+        target_q_network.compile(optimizer: keras.optimizers.Adam(learning_rate: 0.002f),
+            loss: keras.losses.MeanSquaredError(),
+            System.Array.Empty<string>());
+
+        for (int i = 0; i < q_network.Weights.Count; i++)
+        {
+            tf.assign(target_q_network.Weights[i], q_network.Weights[i]);
+        }
+
+        return (q_network, target_q_network);
+    }
+
     private void Learn()
     {
         _learnStepCount++;
 
         if (_learnStepCount % NUM_STEPS_FOR_UPDATE != 0
-            || Experiences.Count < UPDATE_BATCH_SIZE)
+            || _experience.Count < UPDATE_BATCH_SIZE)
         {
             return;
         }
 
         var optimizer = new Adam(learning_rate: 0.001f);
 
-        using (var g = tf.GradientTape())
+        (var states, var actions, var rewards, var nextStates, var done) = _experience.Get(UPDATE_BATCH_SIZE);
+
+        using var g = tf.GradientTape(true);
+
+        var loss = CalculateLoss(states, actions, rewards, nextStates, done, DISCOUNT_FACTOR, _qNetwork, _targetQNetwork);
+
+        // Compute gradients
+        var gradients = g.gradient(loss, _qNetwork.TrainableVariables);
+
+        // Update the weights of the q_network.
+        var zipped = zip(gradients, _qNetwork.TrainableVariables.Select(x => x as ResourceVariable));
+        optimizer.apply_gradients(zipped);
+
+        // Update the weights of target q_network
+        foreach (var (qWeights, targetQWeights) in zip(_qNetwork.Weights, _targetQNetwork.Weights))
         {
-            var loss = CalculateLoss(Experiences.Get(UPDATE_BATCH_SIZE), DISCOUNT_FACTOR, QNetwork, TargetQNetwork);
-
-            // Get the gradients of the loss with respect to the weights.
-            var gradients = g.gradient(loss, QNetwork.Weights);
-
-            // Update the weights of the q_network.
-            optimizer.apply_gradients(zip(gradients, QNetwork.TrainableVariables.Select(x => x as ResourceVariable)));
-
-            // Update the weights of target q_network
-            foreach (var (qWeights, targetQWeights) in zip(QNetwork.Weights, TargetQNetwork.Weights))
-            {
-                targetQWeights.assign(
-                    SOFT_UPDATE_FACTOR * qWeights.AsTensor() 
-                    + ((1.0 - SOFT_UPDATE_FACTOR) * targetQWeights.AsTensor()));
-            }
+            targetQWeights.assign(
+                SOFT_UPDATE_FACTOR * qWeights.AsTensor()
+                + ((1.0 - SOFT_UPDATE_FACTOR) * targetQWeights.AsTensor()));
         }
     }
 
-    private static Tensor CalculateLoss(List<Experience> experiences, float gamma, Sequential qNetwork, Sequential targetQNetwork)
+    private static Tensor CalculateLoss(Tensor states, Tensor actions, Tensor rewards,
+        Tensor nextStates, Tensor done, float gamma, Sequential qNetwork, Sequential targetQNetwork)
     {
-        NDArray states = new(experiences.Select(e => e.State).ToArray());
-        states = states.reshape((-1, STATE_SIZE));
+        var maxQSA = tf.reduce_max(targetQNetwork.Apply(nextStates));
 
-        NDArray rewards = new(experiences.Select(e => e.Reward).ToArray());
+        var yTargets = (rewards + ((1 - done) * gamma * maxQSA)).numpy();
 
-        NDArray nextStates = new(experiences.Select(e => e.NextState).ToArray());
-        nextStates = nextStates.reshape((-1, STATE_SIZE));
-
-        NDArray done = new(experiences.Select(e => e.Ended ? 1 : 0).ToArray());
-
-        var maxQSA = tf.reduce_max(targetQNetwork.predict(nextStates));
-
-        var yTargets = rewards + ((1 - done) * gamma * maxQSA);
-
-        var qValues = qNetwork.predict(states);
-
+        var qValues = qNetwork.Apply(states);
+        
         List<float> selectedQValues = new();
         int i = 0;
-        foreach (Action action in experiences.Select(e => e.Action))
+        foreach (var action in tf.unstack(actions))
         {
-            selectedQValues.Add(((float)qValues[0][i][(int)action]));
+            selectedQValues.Add((float)qValues[0][i][(int)action]);
         }
+        
 
-        Tensor tensorQValues = new(selectedQValues.ToArray());
+        Tensor ndQValues = new(selectedQValues.ToArray());
 
         // Calculated MSE loss
-        var loss = tf.reduce_sum(tf.pow(tensorQValues - yTargets, 2)) / (2f * yTargets.shape[0]);
+        var loss = tf.reduce_sum(tf.pow(ndQValues - yTargets, 2)) / (2f * yTargets.shape[0]);
 
         return loss;
     }
@@ -448,33 +490,103 @@ public partial class Ship : RigidBody2D
             if (_rng.Randf() > Epsilon) // Pick best action from Q-Network
             {
                 NDArray state = ship.ToState().ToNDArray();
-                Tensor prediction = QNetwork.predict(state);
-                var bestActionArg = np.argmax(prediction[0][0].numpy());
-                return GetActionFromIndex(bestActionArg);
+                Tensor prediction = QNetwork.Apply(state);
+                var bestActionArg = np.argmax(prediction[0].numpy());
+                return (Action)(int)bestActionArg;
             }
             else // Random action
             {
                 int rand = _rng.RandiRange(0, 3);
-                return GetActionFromIndex(rand);
+                return (Action)rand;
+            }
+        }
+    }
+
+    public class Experience
+    {
+        public Experience(State state, Ship.Action action, float reward, State nextState, bool ended)
+        {
+            State = state;
+            NextState = nextState;
+            Reward = reward;
+            Action = action;
+            Ended = ended;
+        }
+
+        public State State;
+        public Ship.Action Action;
+        public float Reward;
+        public State NextState;
+        public bool Ended;
+    }
+
+    public class FixedSizeExperienceList
+    {
+        private readonly List<Experience> _list = new List<Experience>();
+        private int _limit;
+
+        public int Count => _list.Count;
+
+        public FixedSizeExperienceList(int limit)
+        {
+            _limit = limit;
+        }
+
+        public void Add(Experience obj)
+        {
+            _list.add(obj);
+            if (_list.Count > _limit)
+            {
+
+            }
+            while (_list.Count > _limit)
+            {
+                _list.RemoveAt(_list.Count - 1);
             }
         }
 
-        private static Action GetActionFromIndex(int ind)
+        // Returns Tensors containing, in order, current state, action, reward, next state, and done-ness
+        // state and next state tensors have already been reshaped
+        public (Tensor, Tensor, Tensor, Tensor, Tensor) Get(int count, RandomNumberGenerator rng = null)
         {
-            switch (ind)
+            HashSet<int> indecies = new HashSet<int>();
+            if (rng == null)
             {
-                case 0:
-                    return Action.Nothing;
-                case 1:
-                    return Action.ThrustDown;
-                case 2:
-                    return Action.ThrustLeft;
-                case 3:
-                    return Action.ThrustRight;
-                default:
-                    return Action.Nothing;
+                rng = new RandomNumberGenerator();
             }
+
+            for (int i = 0; i < count; i++)
+            {
+                int index = rng.RandiRange(0, _list.Count - 1);
+                while (true == indecies.Contains(index))
+                {
+                    index = rng.RandiRange(0, _list.Count - 1);
+                }
+                indecies.Add(index);
+            }
+
+            List<Experience> chosenExperiences = indecies.Select(i => _list[i]).ToList();
+
+            Tensor states = new(chosenExperiences.Select(e => e.State).Select(s => new float[] { s.X, s.Y, s.XVelocity, s.YVelocity, s.Angle, s.AngularVelocity, s.LeftLegTouching ? 1f : 0f, s.RightLegTouching ? 1f : 0f }).SelectMany(d => d).ToArray());
+            states = tf.reshape(states, (-1, STATE_SIZE));
+
+            Tensor actions = new(chosenExperiences.Select(e => (int)e.Action).ToArray());
+
+            Tensor rewards = new(chosenExperiences.Select(e => e.Reward).ToArray());
+
+            Tensor nextStates = new(chosenExperiences.Select(e => e.NextState).Select(s => new float[] { s.X, s.Y, s.XVelocity, s.YVelocity, s.Angle, s.AngularVelocity, s.LeftLegTouching ? 1f : 0f, s.RightLegTouching ? 1f : 0f }).SelectMany(d => d).ToArray());
+            nextStates = tf.reshape(nextStates, (-1, STATE_SIZE));
+
+            Tensor done = new(chosenExperiences.Select(e => e.Ended ? 1 : 0).ToArray());
+
+            return (states, actions, rewards, nextStates, done);
         }
+    }
+
+    public void SaveExperience(State state, Ship.Action action, float reward, State nextState, bool ended)
+    {
+        var exp = new Experience(state, action, reward, nextState, ended);
+        _experience.Add(exp);
     }
 }
 
