@@ -115,6 +115,7 @@ public partial class Ship : RigidBody2D
         _maxMissionLengthTimer = GetNode<Timer>("MaxMissionLengthTimer");
         _rng = new RandomNumberGenerator();
 
+        InitNeuralNetworks();
         ActionSelector = new DQLActionSelector(_epsilon, _qNetwork, _rng);
     }
 
@@ -197,7 +198,7 @@ public partial class Ship : RigidBody2D
     private bool _rightLegTouching = false;
     private bool _wasTouchingDownLastFrame = false;
     private TimeSpan _touchdownDownDuration;
-    private readonly TimeSpan _requiredTouchdownDurationForWin = new(0, 0, 1);
+    private readonly TimeSpan _requiredTouchdownDurationForWin = new(0, 0, 0, 0, 300);
     private bool _simulationEndedLastStep = false; // For calculating Q prime
     private bool _simulationInProgress = false;
 
@@ -206,7 +207,6 @@ public partial class Ship : RigidBody2D
     private void OnBodyShapeEntered(Rid _, Godot.Node _2, long _3, long local_shape_index)
     {
         CollisionPolygon2D localCollisionObject = GetLocalCollisionObject(local_shape_index);
-        GD.Print($"Found leg {localCollisionObject.Name} Landing");
 
         if (localCollisionObject.Name.ToString().Contains("Leg"))
         {
@@ -237,7 +237,6 @@ public partial class Ship : RigidBody2D
     private void OnBodyShapeExited(Rid _, Godot.Node _2, long _3, long local_shape_index)
     {
         CollisionPolygon2D localCollisionObject = GetLocalCollisionObject(local_shape_index);
-        GD.Print($"Found leg {localCollisionObject.Name} Taking off");
 
         if (localCollisionObject.Name.ToString().Contains("Leg"))
         {
@@ -280,8 +279,10 @@ public partial class Ship : RigidBody2D
     {
         if (_simulationInProgress)
         {
+            GD.Print($"Epsilon: {_epsilon}");
             _simulationEndedLastStep = true;
             _epsilon = UpdateEpsilon(_epsilon);
+            ActionSelector = new DQLActionSelector(_epsilon, _qNetwork, _rng);
             EmitSignal(SignalName.SimulationEnd);
             _simulationInProgress = false;
         }
@@ -350,7 +351,7 @@ public partial class Ship : RigidBody2D
 
         (var states, var actions, var rewards, var nextStates, var done) = _experience.Get(UPDATE_BATCH_SIZE);
 
-        using var g = tf.GradientTape(true);
+        using var g = tf.GradientTape();
 
         var loss = CalculateLoss(states, actions, rewards, nextStates, done, DISCOUNT_FACTOR, _qNetwork, _targetQNetwork);
 
@@ -373,9 +374,9 @@ public partial class Ship : RigidBody2D
     private static Tensor CalculateLoss(Tensor states, Tensor actions, Tensor rewards,
         Tensor nextStates, Tensor done, float gamma, Sequential qNetwork, Sequential targetQNetwork)
     {
-        var maxQSA = tf.reduce_max(targetQNetwork.Apply(nextStates));
+        var maxQSA = tf.reduce_max(targetQNetwork.Apply(nextStates), axis: 1);
 
-        var yTargets = (rewards + ((1 - done) * gamma * maxQSA)).numpy();
+        var yTargets = (rewards + ((1 - done) * gamma * maxQSA));
 
         var qValues = qNetwork.Apply(states);
         
@@ -385,9 +386,9 @@ public partial class Ship : RigidBody2D
         {
             selectedQValues.Add((float)qValues[0][i][(int)action]);
         }
-        
 
-        Tensor ndQValues = new(selectedQValues.ToArray());
+        //Tensor ndQValues = tf.constant(selectedQValues.ToArray());
+        Tensor ndQValues = tf.reduce_mean(qValues, axis: 1);
 
         // Calculated MSE loss
         var loss = tf.reduce_sum(tf.pow(ndQValues - yTargets, 2)) / (2f * yTargets.shape[0]);
@@ -567,17 +568,17 @@ public partial class Ship : RigidBody2D
 
             List<Experience> chosenExperiences = indecies.Select(i => _list[i]).ToList();
 
-            Tensor states = new(chosenExperiences.Select(e => e.State).Select(s => new float[] { s.X, s.Y, s.XVelocity, s.YVelocity, s.Angle, s.AngularVelocity, s.LeftLegTouching ? 1f : 0f, s.RightLegTouching ? 1f : 0f }).SelectMany(d => d).ToArray());
+            Tensor states = tf.constant(chosenExperiences.Select(e => e.State).Select(s => new float[] { s.X, s.Y, s.XVelocity, s.YVelocity, s.Angle, s.AngularVelocity, s.LeftLegTouching ? 1f : 0f, s.RightLegTouching ? 1f : 0f }).SelectMany(d => d).ToArray());
             states = tf.reshape(states, (-1, STATE_SIZE));
 
-            Tensor actions = new(chosenExperiences.Select(e => (int)e.Action).ToArray());
+            Tensor actions = tf.constant(chosenExperiences.Select(e => (int)e.Action).ToArray());
 
-            Tensor rewards = new(chosenExperiences.Select(e => e.Reward).ToArray());
+            Tensor rewards = tf.constant(chosenExperiences.Select(e => e.Reward).ToArray());
 
-            Tensor nextStates = new(chosenExperiences.Select(e => e.NextState).Select(s => new float[] { s.X, s.Y, s.XVelocity, s.YVelocity, s.Angle, s.AngularVelocity, s.LeftLegTouching ? 1f : 0f, s.RightLegTouching ? 1f : 0f }).SelectMany(d => d).ToArray());
+            Tensor nextStates = tf.constant(chosenExperiences.Select(e => e.NextState).Select(s => new float[] { s.X, s.Y, s.XVelocity, s.YVelocity, s.Angle, s.AngularVelocity, s.LeftLegTouching ? 1f : 0f, s.RightLegTouching ? 1f : 0f }).SelectMany(d => d).ToArray());
             nextStates = tf.reshape(nextStates, (-1, STATE_SIZE));
 
-            Tensor done = new(chosenExperiences.Select(e => e.Ended ? 1 : 0).ToArray());
+            Tensor done = tf.constant(chosenExperiences.Select(e => e.Ended ? 1 : 0).ToArray());
 
             return (states, actions, rewards, nextStates, done);
         }
