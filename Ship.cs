@@ -1,20 +1,13 @@
 using Godot;
-using Godot.Collections;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection.Metadata;
 using Tensorflow;
-using Tensorflow.Gradients;
 using Tensorflow.Keras.Engine;
-using Tensorflow.Keras.Losses;
 using Tensorflow.Keras.Optimizers;
 using Tensorflow.NumPy;
-using Tensorflow.Operations.Losses;
-using static Ship;
 using static Tensorflow.Binding;
 using static Tensorflow.KerasApi;
-using static World;
 
 public partial class Ship : RigidBody2D
 {
@@ -45,7 +38,7 @@ public partial class Ship : RigidBody2D
     public const int STATE_SIZE = 8;
     private const int ACTION_SIZE = 4;
     private const float EPSILON_MIN = 0.01f;
-    private const float EPSILON_DECAY = 0.995f;
+    private const float EPSILON_DECAY = 0.999f;
     private float _epsilon = 1;
 
     private int NUM_STEPS_FOR_UPDATE = 4;
@@ -93,7 +86,6 @@ public partial class Ship : RigidBody2D
             _rewardSinceLastStep = 0;
             _learnStepCount = 0;
 
-            _anyLegHasTouched = false;
             _leftLegTouching = false;
             _rightLegTouching = false;
 
@@ -116,6 +108,7 @@ public partial class Ship : RigidBody2D
         _rng = new RandomNumberGenerator();
 
         InitNeuralNetworks();
+        //ActionSelector = new PlayerActionSelector();
         ActionSelector = new DQLActionSelector(_epsilon, _qNetwork, _rng);
     }
 
@@ -158,10 +151,10 @@ public partial class Ship : RigidBody2D
 
         if (_leftLegTouching && _rightLegTouching)
         {
-            if (_wasTouchingDownLastFrame)
+            if (_timeSinceLastTouchdownDuration < _touchdownInterruptionAllowance)
             {
-                _touchdownDownDuration = _touchdownDownDuration.Add(new TimeSpan(0, 0, 0, 0, (int)(delta * 1000f)));
-                if (_touchdownDownDuration > _requiredTouchdownDurationForWin)
+                _touchdownDuration = _touchdownDuration.Add(new TimeSpan(0, 0, 0, 0, (int)(delta * 1000f)));
+                if (_touchdownDuration > _requiredTouchdownDurationForWin)
                 {
                     GD.Print("Won!");
                     ApplyReward(WinReward);
@@ -170,13 +163,14 @@ public partial class Ship : RigidBody2D
             }
             else
             {
-                _wasTouchingDownLastFrame = true;
-                _touchdownDownDuration = new TimeSpan(0);
+                _touchdownDuration = new TimeSpan(0);
             }
+
+            _timeSinceLastTouchdownDuration = TimeSpan.Zero;
         }
         else
         {
-            _wasTouchingDownLastFrame = false;
+            _timeSinceLastTouchdownDuration = _timeSinceLastTouchdownDuration.Add(new TimeSpan(0, 0, 0, 0, (int)(delta * 1000f)));
         }
 
         Learn();
@@ -193,12 +187,12 @@ public partial class Ship : RigidBody2D
     // State to track progress on rewards
     private int _learnStepCount = 0;
     private bool _firstStepOfSimulation = true;
-    private bool _anyLegHasTouched = false;
     private bool _leftLegTouching = false;
     private bool _rightLegTouching = false;
-    private bool _wasTouchingDownLastFrame = false;
-    private TimeSpan _touchdownDownDuration;
-    private readonly TimeSpan _requiredTouchdownDurationForWin = new(0, 0, 0, 0, 300);
+    private TimeSpan _touchdownDuration;
+    private TimeSpan _timeSinceLastTouchdownDuration = TimeSpan.Zero;
+    private TimeSpan _touchdownInterruptionAllowance = new(0, 0, 0, 0, 350);
+    private readonly TimeSpan _requiredTouchdownDurationForWin = new(0, 0, 1);
     private bool _simulationEndedLastStep = false; // For calculating Q prime
     private bool _simulationInProgress = false;
 
@@ -210,11 +204,7 @@ public partial class Ship : RigidBody2D
 
         if (localCollisionObject.Name.ToString().Contains("Leg"))
         {
-            if (false == _anyLegHasTouched)
-            {
-                _anyLegHasTouched = true;
-                ApplyReward(FirstLegTouchReward);
-            }
+            ApplyReward(FirstLegTouchReward);
 
             if (localCollisionObject.Name.ToString().Contains("Left"))
             {
@@ -240,6 +230,8 @@ public partial class Ship : RigidBody2D
 
         if (localCollisionObject.Name.ToString().Contains("Leg"))
         {
+            ApplyReward(-FirstLegTouchReward);
+
             if (localCollisionObject.Name.ToString().Contains("Left"))
             {
                 _leftLegTouching = false;
@@ -387,8 +379,8 @@ public partial class Ship : RigidBody2D
             selectedQValues.Add((float)qValues[0][i][(int)action]);
         }
 
-        //Tensor ndQValues = tf.constant(selectedQValues.ToArray());
-        Tensor ndQValues = tf.reduce_mean(qValues, axis: 1);
+        //Tensor ndQValues2 = tf.constant(selectedQValues.ToArray());
+        Tensor ndQValues = tf.reduce_max(qValues, axis: 1);
 
         // Calculated MSE loss
         var loss = tf.reduce_sum(tf.pow(ndQValues - yTargets, 2)) / (2f * yTargets.shape[0]);
